@@ -1,49 +1,66 @@
-pipeline{
-    agent any
-     tools {
+node {
+
+    // Load necessary environment
+    tools {
         maven 'Maven-3.6.1'
     }
-    
-    environment{
-        PATH = "/opt/maven3/bin:$PATH"
+
+    stage('Initialization') {
+        env.PATH = "/opt/maven3/bin:${env.PATH}"
     }
-    stages{
-        stage("Git Checkout"){
-            steps{
-                git credentialsId: 'javahome2', url: 'https://github.com/srinicloud87/myweb.git'
+
+    stage('Checkout') {
+        checkout([$class: 'GitSCM',
+            branches: [[name: '*/main']],
+            userRemoteConfigs: [[credentialsId: 'javahome2', url: 'https://github.com/srinicloud87/myweb.git']]
+        ])
+    }
+
+    try {
+        stage('Build & Sonar') {
+            withSonarQubeEnv('SonarQube Scanner') {
+                sh "mvn clean package sonar:sonar"
             }
         }
-        stage("Maven Build"){
-            steps{
-                sh "mvn clean sonar:sonar package"
-                
+
+        stage('Quality Gate') {
+            timeout(1, 'HOURS') {
+                waitForQualityGate(abortPipeline: true)
             }
         }
-        stage('Upload War To Nexus'){
-            steps{
-                  nexusArtifactUploader artifacts: [
-                       [
-                            artifactId: 'myweb', 
-                            classifier: '', 
-                            file: "target/myweb-8.2.0.war", 
-                            type: 'war'
-                       ]
-                  ], 
-                  credentialsId: 'nexus3', 
-                  groupId: 'in.javahome', 
-                  nexusUrl: '172.31.47.190:8081', 
-                  nexusVersion: 'nexus3', 
-                  protocol: 'http', 
-                  repository: 'sample-releases', 
-                  version: '8.2.0'  
-              }
-            }
-        stage("Execute Ansible"){
-            steps{
-                ansiblePlaybook credentialsId: 'private-key', disableHostKeyChecking: true, installation: 'ansible2', inventory: 'dev.in', playbook: 'copy.yml'
-            }
-           
+
+        stage('Upload to Nexus') {
+            nexusArtifactUploader(
+                artifacts: [
+                    [artifactId: 'myweb', classifier: '', file: 'target/myweb-8.2.0.war', type: 'war']
+                ],
+                credentialsId: 'nexus3',
+                groupId: 'in.javahome',
+                nexusUrl: '172.31.47.190:8081',
+                nexusVersion: 'nexus3',
+                protocol: 'http',
+                repository: 'sample-releases',
+                version: '8.2.0'
+            )
+        }
+
+        stage('Deploy via Ansible') {
+            ansiblePlaybook(
+                credentialsId: 'private-key',
+                disableHostKeyChecking: true,
+                installation: 'ansible2',
+                inventory: 'dev.in',
+                playbook: 'copy.yml'
+            )
+        }
+
+    } catch (err) {
+        echo "Pipeline failed: ${err}"
+        currentBuild.result = 'FAILURE'
+        throw err
+    } finally {
+        stage('Cleanup') {
+            deleteDir()
         }
     }
 }
-#1212vk12
